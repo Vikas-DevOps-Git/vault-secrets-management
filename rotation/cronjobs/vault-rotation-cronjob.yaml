@@ -1,0 +1,104 @@
+# Vault rotation CronJob — runs every 6 hours
+# Authenticates via Kubernetes auth, renews all expiring leases
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault-system
+  labels:
+    app.kubernetes.io/managed-by: kubectl
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-rotation-sa
+  namespace: vault-system
+  annotations:
+    # This SA is bound to the vault-rotation Vault role
+    vault.hashicorp.com/role: "vault-rotation"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-lease-rotation
+  namespace: vault-system
+  labels:
+    app: vault-rotation
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  concurrencyPolicy: Forbid  # Prevent overlapping runs
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: vault-rotation
+        spec:
+          serviceAccountName: vault-rotation-sa
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 2000
+          containers:
+            - name: vault-rotation
+              image: python:3.11-slim
+              command:
+                - python
+                - -m
+                - vault_rotation.main
+              args:
+                - --vault-addr
+                - "http://vault.vault.svc.cluster.local:8200"
+                - --k8s-role
+                - "vault-rotation"
+                - --lease-prefixes
+                - "database/creds/"
+                - "aws/creds/"
+                - "pki_int/issue/"
+                - --threshold-hours
+                - "24"
+                - --output
+                - json
+                - --log-file
+                - /var/log/rotation.log
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"
+              volumeMounts:
+                - name: log-volume
+                  mountPath: /var/log
+              env:
+                - name: VAULT_ADDR
+                  value: "http://vault.vault.svc.cluster.local:8200"
+          volumes:
+            - name: log-volume
+              emptyDir: {}
+---
+# RBAC — rotation SA has no K8s permissions (Vault auth only)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-rotation-role
+  namespace: vault-system
+rules: []  # No K8s API permissions needed — only Vault auth
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-rotation-rb
+  namespace: vault-system
+subjects:
+  - kind: ServiceAccount
+    name: vault-rotation-sa
+    namespace: vault-system
+roleRef:
+  kind: Role
+  name: vault-rotation-role
+  apiGroup: rbac.authorization.k8s.io
