@@ -1,0 +1,17 @@
+appName: payment-api
+namespace: finance
+replicas: 3
+containerPort: 8080
+vaultRole: payment-api
+
+image:
+  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/payment-api
+  tag: "2.1.0"
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"

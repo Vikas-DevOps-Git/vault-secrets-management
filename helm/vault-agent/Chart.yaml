@@ -1,0 +1,8 @@
+apiVersion: v2
+name: vault-agent-injector
+version: 1.0.0
+description: |
+  Helm chart for deploying applications with Vault Agent sidecar injection.
+  Demonstrates annotation-based secret injection without modifying app code.
+  The Vault Agent sidecar authenticates to Vault and writes secrets to a
+  shared volume that the application container reads at startup.

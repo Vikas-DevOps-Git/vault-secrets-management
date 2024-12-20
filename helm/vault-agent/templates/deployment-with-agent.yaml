@@ -1,0 +1,76 @@
+# Deployment with Vault Agent sidecar annotations
+# Vault injects secrets as files into /vault/secrets/
+# Application reads secrets from files — no SDK required
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.appName }}
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: {{ .Values.appName }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.appName }}
+      annotations:
+        # Enable Vault Agent injection
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "{{ .Values.vaultRole }}"
+        vault.hashicorp.com/agent-inject-status: "update"
+
+        # Database credentials — injected as /vault/secrets/db-creds
+        vault.hashicorp.com/agent-inject-secret-db-creds: "database/creds/payment-api-role"
+        vault.hashicorp.com/agent-inject-template-db-creds: |
+          {{`{{- with secret "database/creds/payment-api-role" -}}
+          export DB_USERNAME="{{ .Data.username }}"
+          export DB_PASSWORD="{{ .Data.password }}"
+          {{- end }}`}}
+
+        # App secrets from KV v2
+        vault.hashicorp.com/agent-inject-secret-app-config: "secret/data/finance/payment-api/config"
+        vault.hashicorp.com/agent-inject-template-app-config: |
+          {{`{{- with secret "secret/data/finance/payment-api/config" -}}
+          export API_KEY="{{ .Data.data.api_key }}"
+          export JWT_SECRET="{{ .Data.data.jwt_secret }}"
+          {{- end }}`}}
+
+        # Pre-populate secrets before app starts
+        vault.hashicorp.com/agent-pre-populate-only: "false"
+        vault.hashicorp.com/agent-revoke-on-shutdown: "true"
+        vault.hashicorp.com/agent-revoke-grace: "5s"
+
+    spec:
+      serviceAccountName: {{ .Values.appName }}-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: {{ .Values.appName }}
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Source injected secrets before starting app
+              source /vault/secrets/db-creds
+              source /vault/secrets/app-config
+              exec node app.js
+          ports:
+            - containerPort: {{ .Values.containerPort | default 8080 }}
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | default "100m" }}
+              memory: {{ .Values.resources.requests.memory | default "128Mi" }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | default "500m" }}
+              memory: {{ .Values.resources.limits.memory | default "512Mi" }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.containerPort | default 8080 }}
+            initialDelaySeconds: 15
+            periodSeconds: 5
