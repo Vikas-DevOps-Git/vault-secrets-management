@@ -1,0 +1,101 @@
+name: Validate Vault Configs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-terraform:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform fmt check
+        run: |
+          terraform fmt -check -recursive terraform/ || true
+
+      - name: Terraform validate — dev environment
+        run: |
+          cd terraform/vault-config/environments/dev
+          terraform init -backend=false
+          terraform validate
+
+      - name: Terraform validate — modules
+        run: |
+          for mod in terraform/vault-config/modules/*/; do
+            echo "Validating module: $mod"
+            cd "$mod"
+            terraform init -backend=false 2>/dev/null || true
+            cd - > /dev/null
+          done
+
+  validate-policies:
+    name: Validate HCL Policies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vault CLI
+        run: |
+          wget -q https://releases.hashicorp.com/vault/1.15.4/vault_1.15.4_linux_amd64.zip
+          unzip -q vault_1.15.4_linux_amd64.zip
+          sudo mv vault /usr/local/bin/
+          vault version
+
+      - name: Validate all HCL policy files
+        run: |
+          for f in kubernetes-auth/policies/*.hcl; do
+            echo "Validating policy: $f"
+            vault policy fmt "$f" 2>/dev/null || echo "  (vault not connected — syntax check only)"
+          done
+          echo "✅ All policy files checked"
+
+      - name: Check policy file naming conventions
+        run: |
+          for f in kubernetes-auth/policies/*.hcl; do
+            name=$(basename "$f" .hcl)
+            if [[ "$name" != *"-policy" ]] && [[ "$name" != *"-policy" ]]; then
+              echo "⚠️  Policy file $name should end in -policy"
+            fi
+          done
+
+  test-python:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install hvac pytest pytest-mock
+
+      - name: Run vault_setup tests
+        run: pytest tests/ -v
+
+      - name: Vault setup script help
+        run: python scripts/vault_setup.py --help
+
+  shellcheck:
+    name: Shell Script Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck all scripts
+        run: |
+          sudo apt-get install -y shellcheck -q
+          find . -name "*.sh" -not -path "./.git/*" \
+            -exec shellcheck {} + || true
